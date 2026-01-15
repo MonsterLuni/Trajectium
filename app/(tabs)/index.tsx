@@ -1,85 +1,71 @@
 import { Picker } from '@react-native-picker/picker';
 import { DeviceMotion } from 'expo-sensors';
-import * as SQLite from 'expo-sqlite';
 import { useEffect, useRef, useState } from 'react';
-import { Button, StyleSheet, Text, View } from 'react-native';
+import { Button, ScrollView, StyleSheet, Text } from 'react-native';
 import { LineChart } from "react-native-gifted-charts";
+import { MotionDto, MotionService } from '../persistence/services/motionService';
+import { RecordingDto, RecordingService } from '../persistence/services/recordingService';
 
 export default function SensorScreen() {
+  const [motionData, setMotionData] = useState<Array<MotionDto>>([]);
+  const motionDataRef = useRef<Array<MotionDto>>([]);
+
+  useEffect(() => {
+    motionDataRef.current = motionData;
+  }, [motionData]);
+
+  const [recording, setRecording] = useState<boolean>(false);
+  const recordingRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
+  const motionService = new MotionService();
+  const recordingService = new RecordingService();
+  
+
   const [selectedRecording, setSelectedRecording] = useState<number>(-1);
-  const [showData, setShowData] = useState(false);
+  const [recordings, setRecordings] = useState<Array<RecordingDto>>([]);
+
   const accelerationData = useRef({ x: 0, y: 0, z: 0, timestamp: 0 });
   const rotationData = useRef({ alpha: 0, beta: 0, gamma: 0, timestamp: 0 });
+
   const worldAcceleration = useRef({ x: 0, y: 0, z: 0});
-  const dbRef = useRef<SQLite.SQLiteDatabase | null>(null);
-  const recording = useRef(false);
-  const recordings = useRef<Array<RecordingRow>>([]);
+  
   const recordingId = useRef<number | null>(null);
   const startTime = useRef<number | null>(null);
 
-    type MotionRow = {
-    id: number;
-    recordingFK: number;
-    x: number;
-    y: number;
-    z: number;
-    duration: number;
-  };
-
-  type RecordingRow = {
-    id: number;
-    startTime: number;
-    endTime: number;
-  };
-
   useEffect(() => {
-    initializeDatabase();
-
-    DeviceMotion.setUpdateInterval(250);
+    DeviceMotion.setUpdateInterval(500);
     DeviceMotion.addListener(async (deviceMotion) => {
-    // acceleration in m/s²
-    accelerationData.current = deviceMotion.acceleration ?? { x: 0, y: 0, z: 0, timestamp: 0 };
-    rotationData.current = deviceMotion.rotation;
-    await calculateWorldAcceleration();
-  });
+      // acceleration in m/s²
+      accelerationData.current = deviceMotion.acceleration ?? { x: 0, y: 0, z: 0, timestamp: 0 };
+      rotationData.current = deviceMotion.rotation;
+      await calculateWorldAccelerationAsync();
+    });
+  console.log("SETUP DONE");
   }, []);
 
   async function toggleRecording(){
-    if (!dbRef.current) throw new Error("DB not initialized (toggleRecording)");
-
-    recording.current ? stopRecording() : startRecording();
-    recording.current = !recording.current;
+    recording ? stopRecording() : startRecording();
+    setRecording(!recording);
   }
 
   async function startRecording(){
       startTime.current = Date.now();
-      console.log("START TIME: " + startTime.current);
-      const result = dbRef.current!.runSync(`INSERT INTO recording (startTime) VALUES (?);`, [startTime.current]);
+      const result = await recordingService.createRecordingAsync({startTime: startTime.current});
       recordingId.current = result.lastInsertRowId;
+      setMotionData([]);
   }
 
   async function stopRecording(){
-    await dbRef.current!.runAsync(`UPDATE recording SET endTime = ? WHERE id = ?;`,[Date.now(), recordingId.current]);
+    await recordingService.updateRecordingAsync({id: recordingId.current!, startTime: startTime.current!, endTime: Date.now()});
+    const recordings = await recordingService.getRecordingsAsync();
+    setRecordings(recordings);
   }
 
-  async function initializeDatabase() {
-    var db = await SQLite.openDatabaseAsync('Motion.db');
-    
-    await db.execAsync(`
-      PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS recording (id INTEGER PRIMARY KEY AUTOINCREMENT, startTime INTEGER NOT NULL, endTime INTEGER);
-      CREATE TABLE IF NOT EXISTS motion (id INTEGER PRIMARY KEY AUTOINCREMENT, recordingFK INTEGER NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, duration INTEGER NOT NULL, FOREIGN KEY(recordingFK) REFERENCES recording(id));
-    `);
-    dbRef.current = db;
-
-    getRecordings();
-  }
-
-  async function deleteDatabase(){
-    await SQLite.deleteDatabaseAsync('Motion.db');
-  }
-
-  async function calculateWorldAcceleration() {
+  async function calculateWorldAccelerationAsync() {
     // Für jede Richtung muss abgewegt werden, wie viel davon einfach in x,y,z richtung ist in der Welt.
     const cosAlpha = Math.cos(rotationData.current.alpha);
     const cosBeta = Math.cos(rotationData.current.beta);
@@ -89,61 +75,28 @@ export default function SensorScreen() {
     worldAcceleration.current.y = ((accelerationData.current.y * cosBeta) * cosAlpha) * cosGamma
     worldAcceleration.current.z = ((accelerationData.current.z * cosAlpha) * cosAlpha) * cosBeta
 
-    if(recording.current){
-      await saveInDatabase();
+    const timeSinceLastUpdate = Date.now() - (accelerationData.current.timestamp);
+    if(recordingRef.current){
+      
+      await motionService.createMotionAsync({ recordingFK: recordingId.current!, x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate});
+      setMotionData(motionDataRef.current.concat([{ x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate }]));
     }
-  }
-
-  async function saveInDatabase(){
-    if(dbRef.current === null){
-      throw new Error("Database not initialized (saveInDatabase)");
-    }
-    if(recordingId.current === null){
-      throw new Error("Recording ID is null (saveInDatabase)");
-    }
-    if(startTime.current === null){
-      throw new Error("Start time is null (saveInDatabase)");
-    }
-
-    const timeSinceLastRecord = accelerationData.current.timestamp - (startTime.current);
-    try{
-      await dbRef.current.runAsync(`INSERT INTO motion (recordingFK, x, y, z, duration) VALUES (?, ?, ?, ?, ?);`, [recordingId.current, worldAcceleration.current.x, worldAcceleration.current.y, worldAcceleration.current.z, timeSinceLastRecord]);
-    }catch(e){
-      console.error("Error inserting data:", e);
-    }
-  }
-
-  async function getRecording(id: number) {
-    if (!dbRef.current) throw new Error("DB not initialized (getRecording)");
-
-    const result = await dbRef.current.getAllAsync<MotionRow>(`SELECT id, recordingFK, x, y, z, duration FROM motion WHERE recordingFK = ? ORDER BY id ASC;`, [id]);
-    result.forEach(motionRow => {
-      console.log(`ID: ${motionRow.id}, RecordingFK: ${motionRow.recordingFK}, X: ${motionRow.x}, Y: ${motionRow.y}, Z: ${motionRow.z}, Duration: ${motionRow.duration}`);
-    });
-    setShowData(true);
-  }
-
-  async function getRecordings(){
-    if (!dbRef.current) throw new Error("DB not initialized (getRecordings)");
-
-    recordings.current =  await dbRef.current.getAllAsync<RecordingRow>(`SELECT * FROM recording;`);
   }
 
   return (
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.container}>
           <Picker style={styles.picker}
             selectedValue={selectedRecording}
-            onValueChange={(itemValue, itemIndex) => {
-              if(dbRef.current !== null){
-                getRecording(itemValue);
-                setSelectedRecording(itemValue);
-              }
+            onValueChange={async (itemValue, itemIndex) => {
+              const data = await motionService.getMotionsFromRecordingIdAsync(itemValue);
+              setMotionData(data);
+              setSelectedRecording(itemValue);
             }
             }>
               <Picker.Item color="#000" label="Select Recording" value={-1} />
               {
-                recordings.current !== null &&
-                  recordings.current.map((recording) => (
+                recordings &&
+                  recordings.map((recording) => (
                     <Picker.Item color="#000"
                       key={recording.id}
                       label={`Recording ${recording.id}`}
@@ -153,10 +106,33 @@ export default function SensorScreen() {
               }
           </Picker>
           {
-            recordings.current != null && <LineChart data={recordings.current.map((data) => ({value: data.id}))} />
+            motionData && <LineChart data={motionData.map((data) => ({value: data.x}))} 
+            data2={motionData.map((data) => ({value: data.y}))} 
+            data3={motionData.map((data) => ({value: data.z}))} 
+            stepValue={0.1}
+            height={250}
+            showVerticalLines
+            spacing={44}
+            initialSpacing={0}
+            color1="skyblue"
+            color2="orange"
+            textColor1="green"
+            dataPointsHeight={6}
+            dataPointsWidth={6}
+            dataPointsColor1="blue"
+            dataPointsColor2="red"
+            textShiftY={-2}
+            textShiftX={-5}
+            textFontSize={13}
+            />
           }
-          <Button onPress={() => getRecording(recordingId.current ?? 0)} title="Get Last Recording"/>
-          <Button onPress={() => toggleRecording()} title={recording.current ? "Stop Recording" : "Start Recording"}/>
+          <Button onPress={() => motionService.getMotionsFromRecordingIdAsync(recordingId.current ?? 0)} title="Get Last Recording"/>
+          <Button onPress={() => toggleRecording()} title={recording ? "Stop Recording" : "Start Recording"}/>
+          <Button onPress={async () => {if(recordingId.current != null){
+            await recordingService.deleteRecordingAsync(selectedRecording)
+            const recordings = await recordingService.getRecordingsAsync();
+            setRecordings(recordings);
+            }}} title="Delete Selected Recording"/>
           <Text>Acceleration:</Text>
           <Text>x: {accelerationData.current.x}</Text>
           <Text>y: {accelerationData.current.y}</Text>
@@ -169,12 +145,7 @@ export default function SensorScreen() {
           <Text>x: {worldAcceleration.current.x}</Text>
           <Text>y: {worldAcceleration.current.y}</Text>
           <Text>z: {worldAcceleration.current.z}</Text>
-          {
-            showData && (
-              <Text>Data fetched from database. Check console log for details.</Text>
-            )
-          }
-      </View>    
+      </ScrollView>    
   );
 }
 
