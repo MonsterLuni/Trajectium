@@ -7,6 +7,7 @@ import { MotionDto, MotionService } from '../persistence/services/motionService'
 import { RecordingDto, RecordingService } from '../persistence/services/recordingService';
 
 export default function SensorScreen() {
+  const [worldRotationDeg, setWorldRotationDeg] = useState<{ alpha: number; beta: number; gamma: number }>({ alpha: 0, beta: 0, gamma: 0 });
   const [motionData, setMotionData] = useState<Array<MotionDto>>([]);
   const motionDataRef = useRef<Array<MotionDto>>([]);
 
@@ -37,7 +38,7 @@ export default function SensorScreen() {
   const startTime = useRef<number | null>(null);
 
   useEffect(() => {
-    DeviceMotion.setUpdateInterval(500);
+    DeviceMotion.setUpdateInterval(33);
     DeviceMotion.addListener(async (deviceMotion) => {
       // acceleration in m/s²
       accelerationData.current = deviceMotion.acceleration ?? { x: 0, y: 0, z: 0, timestamp: 0 };
@@ -67,19 +68,31 @@ export default function SensorScreen() {
 
   async function calculateWorldAccelerationAsync() {
     // Für jede Richtung muss abgewegt werden, wie viel davon einfach in x,y,z richtung ist in der Welt.
-    const cosAlpha = Math.cos(rotationData.current.alpha);
-    const cosBeta = Math.cos(rotationData.current.beta);
-    const cosGamma = Math.cos(rotationData.current.gamma);
+    let alphaDeg = rotationData.current.alpha * (180 / Math.PI);
+    let betaDeg = rotationData.current.beta * (180 / Math.PI);
+    let gammaDeg = rotationData.current.gamma * (180 / Math.PI);
 
-    worldAcceleration.current.x = ((accelerationData.current.x * cosGamma) * cosAlpha) * cosBeta
-    worldAcceleration.current.y = ((accelerationData.current.y * cosBeta) * cosAlpha) * cosGamma
-    worldAcceleration.current.z = ((accelerationData.current.z * cosAlpha) * cosAlpha) * cosBeta
+    const cosAlpha = Math.cos(alphaDeg);
+    const cosBeta = Math.cos(betaDeg);
+    const cosGamma = Math.cos(gammaDeg);
+
+    setWorldRotationDeg({ alpha: alphaDeg, beta: betaDeg, gamma: gammaDeg });
+
+    worldAcceleration.current.x = ((accelerationData.current.x * cosGamma) * cosBeta) * cosAlpha
+    worldAcceleration.current.y = ((accelerationData.current.y * cosGamma) * cosAlpha) * cosBeta
+    worldAcceleration.current.z = ((accelerationData.current.z * cosBeta) * cosAlpha) * cosGamma
 
     const timeSinceLastUpdate = Date.now() - (accelerationData.current.timestamp);
     if(recordingRef.current){
       
       await motionService.createMotionAsync({ recordingFK: recordingId.current!, x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate});
-      setMotionData(motionDataRef.current.concat([{ x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate }]));
+      if(motionDataRef.current.length > 10){
+        console.log("TRIMMING MOTION DATA");
+        setMotionData(motionDataRef.current.slice(1))
+      }else{
+        setMotionData(motionDataRef.current.concat([{ x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate }]));
+      }
+      console.log(motionDataRef.current);
     }
   }
 
@@ -107,8 +120,8 @@ export default function SensorScreen() {
           </Picker>
           {
             motionData && <LineChart data={motionData.map((data) => ({value: data.x}))} 
-            data2={motionData.map((data) => ({value: data.y}))} 
-            data3={motionData.map((data) => ({value: data.z}))} 
+            //data2={motionData.map((data) => ({value: data.y}))} 
+            //data3={motionData.map((data) => ({value: data.z}))} 
             stepValue={0.1}
             height={250}
             showVerticalLines
@@ -133,18 +146,10 @@ export default function SensorScreen() {
             const recordings = await recordingService.getRecordingsAsync();
             setRecordings(recordings);
             }}} title="Delete Selected Recording"/>
-          <Text>Acceleration:</Text>
-          <Text>x: {accelerationData.current.x}</Text>
-          <Text>y: {accelerationData.current.y}</Text>
-          <Text>z: {accelerationData.current.z}</Text>
           <Text>Rotation:</Text>
-          <Text>x: {rotationData.current.alpha}</Text>
-          <Text>y: {rotationData.current.beta}</Text>
-          <Text>z: {rotationData.current.gamma}</Text>
-          <Text>World Acceleration:</Text>
-          <Text>x: {worldAcceleration.current.x}</Text>
-          <Text>y: {worldAcceleration.current.y}</Text>
-          <Text>z: {worldAcceleration.current.z}</Text>
+          <Text>x: {worldRotationDeg.alpha.toFixed(2)}</Text>
+          <Text>y: {worldRotationDeg.beta.toFixed(2)}</Text>
+          <Text>z: {worldRotationDeg.gamma.toFixed(2)}</Text>
       </ScrollView>    
   );
 }
