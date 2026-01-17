@@ -1,4 +1,4 @@
-import { Database } from "../db";
+import Database from "../db";
 
 export type MotionDto = {
   x: number;
@@ -24,7 +24,7 @@ export type CreateMotionDto = {
   duration: number;
 };
 
-export class MotionService {
+export default class MotionService {
   private readonly db: Database;
   constructor() {
     this.db = new Database();

@@ -16,7 +16,7 @@ export type Matrix3D = {
   m33: number;
 };
 
-export class MatrixService {
+export default class MatrixService {
   public multiplyVectorWithMatrix(
     vector: Vector3D,
     matrix: Matrix3D,
@@ -25,6 +25,14 @@ export class MatrixService {
       x: vector.x * matrix.m11 + vector.y * matrix.m12 + vector.z * matrix.m13,
       y: vector.x * matrix.m21 + vector.y * matrix.m22 + vector.z * matrix.m23,
       z: vector.x * matrix.m31 + vector.y * matrix.m32 + vector.z * matrix.m33,
+    };
+  }
+
+  public addVectors(vector: Vector3D, secondVector: Vector3D): Vector3D {
+    return {
+      x: vector.x + secondVector.x,
+      y: vector.y + secondVector.y,
+      z: vector.z + secondVector.z,
     };
   }
 }

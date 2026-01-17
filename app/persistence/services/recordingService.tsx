@@ -1,4 +1,4 @@
-import { Database } from "../db";
+import Database from "../db";
 
 export type RecordingDto = {
   id: number;
@@ -16,7 +16,7 @@ export type CreateRecordingDto = {
   startTime: number;
 };
 
-export class RecordingService {
+export default class RecordingService {
   private readonly db: Database;
   constructor() {
     this.db = new Database();

@@ -1,6 +1,6 @@
 import * as SQLite from "expo-sqlite";
 
-export class Database {
+export default class Database {
   private readonly dbName = "Trajectium.db";
   private readonly db: SQLite.SQLiteDatabase;
 

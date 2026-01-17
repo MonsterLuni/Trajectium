@@ -1,22 +1,28 @@
 import { Picker } from "@react-native-picker/picker";
+import * as Location from "expo-location";
 import { DeviceMotion } from "expo-sensors";
 import { useEffect, useRef, useState } from "react";
-import { Button, ScrollView, StyleSheet, View } from "react-native";
-import { LineChart } from "react-native-gifted-charts";
-import MapView from "react-native-maps";
-import { MatrixService, Vector3D } from "../matrix/matrix";
-import {
+import { Button, StyleSheet, useWindowDimensions, View } from "react-native";
+import MapView, { Polyline } from "react-native-maps";
+import MatrixService, { Vector3D } from "../matrix/matrix";
+import MotionService, {
   MotionDto,
-  MotionService,
 } from "../persistence/services/motionService";
-import {
+import RecordingService, {
   RecordingDto,
-  RecordingService,
 } from "../persistence/services/recordingService";
 
 export default function SensorScreen() {
+  const motionService = useRef<MotionService>(new MotionService()).current;
+  const recordingService = useRef<RecordingService>(
+    new RecordingService(),
+  ).current;
+  const matrixService = useRef<MatrixService>(new MatrixService()).current;
+
   const [motionData, setMotionData] = useState<Array<MotionDto>>([]);
   const motionDataRef = useRef<Array<MotionDto>>([]);
+  const [mapStartPosition, setMapStartPosition] =
+    useState<Location.LocationObjectCoords>();
 
   useEffect(() => {
     motionDataRef.current = motionData;
@@ -25,13 +31,13 @@ export default function SensorScreen() {
   const [recording, setRecording] = useState<boolean>(false);
   const recordingRef = useRef<boolean>(false);
 
+  const { width } = useWindowDimensions();
+  const maxHeight = 250;
+  const computedHeight = Math.min(maxHeight, motionData.length * 10);
+
   useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
-
-  const motionService = new MotionService();
-  const recordingService = new RecordingService();
-  const matrixService = new MatrixService();
 
   const [selectedRecording, setSelectedRecording] = useState<number>(-1);
   const [recordings, setRecordings] = useState<Array<RecordingDto>>([]);
@@ -41,9 +47,30 @@ export default function SensorScreen() {
 
   const recordingId = useRef<number | null>(null);
   const startTime = useRef<number | null>(null);
+  const lastTime = useRef<number | null>(null);
+
+  let worldVelocity = useRef<Vector3D>({ x: 0, y: 0, z: 0 });
+  let worldAcceleration = useRef<Vector3D>({ x: 0, y: 0, z: 0 });
 
   useEffect(() => {
-    DeviceMotion.setUpdateInterval(250);
+    const init = async () => {
+      setRecordings(await recordingService.getRecordingsAsync());
+      const location = await Location.getCurrentPositionAsync();
+      setMapStartPosition(location.coords);
+    };
+    init();
+  }, []);
+
+  async function toggleRecording() {
+    recording ? stopRecording() : startRecording();
+    setRecording(!recording);
+  }
+
+  async function startRecording() {
+    worldVelocity.current = { x: 0, y: 0, z: 0 };
+    worldAcceleration.current = { x: 0, y: 0, z: 0 };
+    lastTime.current = Date.now();
+    DeviceMotion.setUpdateInterval(33);
     DeviceMotion.addListener(async (deviceMotion) => {
       // acceleration in m/s²
       accelerationData.current = deviceMotion.acceleration ?? {
@@ -54,17 +81,9 @@ export default function SensorScreen() {
       };
       rotationData.current = deviceMotion.rotation;
       await calculateWorldAccelerationAsync();
-      setRecordings(await recordingService.getRecordingsAsync());
     });
-    console.log("SETUP DONE");
-  }, []);
-
-  async function toggleRecording() {
-    recording ? stopRecording() : startRecording();
-    setRecording(!recording);
-  }
-
-  async function startRecording() {
+    lastTime.current = Date.now();
+    const startPoint = await Location.getCurrentPositionAsync();
     startTime.current = Date.now();
     const result = await recordingService.createRecordingAsync({
       startTime: startTime.current,
@@ -74,6 +93,7 @@ export default function SensorScreen() {
   }
 
   async function stopRecording() {
+    DeviceMotion.removeAllListeners();
     await recordingService.updateRecordingAsync({
       id: recordingId.current!,
       startTime: startTime.current!,
@@ -84,6 +104,11 @@ export default function SensorScreen() {
   }
 
   async function calculateWorldAccelerationAsync() {
+    if (recordingId.current == null) {
+      console.log("RETURN");
+      return;
+    }
+
     // Für jede Richtung muss abgewegt werden, wie viel davon einfach in x,y,z richtung ist in der Welt.
     const cosAlpha = Math.cos(rotationData.current.alpha);
     const sinAlpha = Math.sin(rotationData.current.alpha);
@@ -99,6 +124,19 @@ export default function SensorScreen() {
       y: accelerationData.current.y,
       z: accelerationData.current.z,
     } as Vector3D;
+
+    if (vector.x < 0.08 && vector.x > -0.08) {
+      vector.x = 0;
+    }
+
+    if (vector.y < 0.08 && vector.y > -0.08) {
+      vector.y = 0;
+    }
+
+    if (vector.z < 0.08 && vector.z > -0.08) {
+      vector.z = 0;
+    }
+
     const rotationMatrixX = {
       m11: 1,
       m12: 0,
@@ -146,30 +184,61 @@ export default function SensorScreen() {
       rotationMatrixZ,
     );
 
-    const timeSinceLastUpdate = Date.now() - accelerationData.current.timestamp;
-    if (recordingRef.current) {
-      await motionService.createMotionAsync({
-        recordingFK: recordingId.current!,
-        x: worldVector.x,
-        y: worldVector.y,
-        z: worldVector.z,
-        duration: timeSinceLastUpdate,
-      });
-      if (motionDataRef.current.length > 10) {
-        setMotionData(motionDataRef.current.slice(1));
-      } else {
-        setMotionData(
-          motionDataRef.current.concat([
-            {
-              x: worldVector.x,
-              y: worldVector.y,
-              z: worldVector.z,
-              duration: timeSinceLastUpdate,
-            },
-          ]),
-        );
+    worldAcceleration.current = matrixService.addVectors(
+      worldAcceleration.current,
+      worldVector,
+    );
+
+    let timeSinceLastUpdate: number | null;
+    if (lastTime.current != null) {
+      timeSinceLastUpdate = Date.now() - lastTime.current;
+
+      worldAcceleration.current = calculateLengthOfMotionBasedOnTime(
+        worldAcceleration.current,
+        timeSinceLastUpdate / 1000,
+      );
+
+      const motionInMeters = calculateLengthOfMotionBasedOnTime(
+        worldAcceleration.current,
+        timeSinceLastUpdate / 1000,
+      );
+
+      if (recordingRef.current) {
+        await motionService.createMotionAsync({
+          recordingFK: recordingId.current,
+          x: motionInMeters.x,
+          y: motionInMeters.y,
+          z: motionInMeters.z,
+          duration: timeSinceLastUpdate,
+        });
+        if (motionDataRef.current.length > 100) {
+          setMotionData(motionDataRef.current.slice(1));
+        } else {
+          setMotionData(
+            motionDataRef.current.concat([
+              {
+                x: motionInMeters.x,
+                y: motionInMeters.y,
+                z: motionInMeters.z,
+                duration: timeSinceLastUpdate,
+              },
+            ]),
+          );
+        }
       }
     }
+    lastTime.current = Date.now();
+  }
+
+  function calculateLengthOfMotionBasedOnTime(
+    velocityVector: Vector3D,
+    durationInSeconds: number,
+  ) {
+    return {
+      x: velocityVector.x * durationInSeconds,
+      y: velocityVector.y * durationInSeconds,
+      z: velocityVector.z * durationInSeconds,
+    } as Vector3D;
   }
 
   return (
@@ -177,11 +246,11 @@ export default function SensorScreen() {
       <Picker
         style={styles.picker}
         selectedValue={selectedRecording}
-        onValueChange={async (itemValue, itemIndex) => {
-          const data =
-            await motionService.getMotionsFromRecordingIdAsync(itemValue);
-          setMotionData(data);
+        onValueChange={async (itemValue) => {
           setSelectedRecording(itemValue);
+          setMotionData(
+            await motionService.getMotionsFromRecordingIdAsync(itemValue),
+          );
         }}
       >
         <Picker.Item color="#000" label="Select Recording" value={-1} />
@@ -195,49 +264,48 @@ export default function SensorScreen() {
             />
           ))}
       </Picker>
-      <MapView
-        style={styles.map}
-        initialRegion={{
-          latitude: 37.78825,
-          longitude: -122.4324,
-          latitudeDelta: 0.0922,
-          longitudeDelta: 0.0421,
-        }}
-      />
-      <ScrollView contentContainerStyle={styles.container}>
-        {motionData && (
-          <LineChart
-            data={motionData.map((data) => ({ value: data.x }))}
-            data2={motionData.map((data) => ({ value: data.y }))}
-            data3={motionData.map((data) => ({ value: data.z }))}
-            stepValue={0.2}
-            height={250}
-            showVerticalLines
-            spacing={44}
-            initialSpacing={0}
-            color1="skyblue"
-            color2="orange"
-            textColor1="green"
-            dataPointsHeight={6}
-            dataPointsWidth={6}
-            dataPointsColor1="blue"
-            dataPointsColor2="red"
-            textShiftY={-2}
-            textShiftX={-5}
-            textFontSize={13}
-          />
-        )}
-      </ScrollView>
+      {mapStartPosition && (
+        <MapView
+          style={styles.map}
+          initialRegion={{
+            latitude: mapStartPosition.latitude,
+            longitude: mapStartPosition.longitude,
+            latitudeDelta: 0.001,
+            longitudeDelta: 0.001,
+          }}
+        >
+          {motionData &&
+            mapStartPosition &&
+            motionData.map((motion, index) => (
+              <Polyline
+                key={`${selectedRecording}-${index}`}
+                coordinates={[
+                  {
+                    latitude: mapStartPosition.latitude,
+                    longitude: mapStartPosition.longitude,
+                  },
+                  {
+                    latitude: mapStartPosition.latitude - motion.x / 111320,
+                    longitude: mapStartPosition.longitude - motion.y / 111320,
+                  },
+                ]}
+                strokeWidth={4}
+                strokeColor="#1E90FF"
+              />
+            ))}
+        </MapView>
+      )}
       <Button
         onPress={() => toggleRecording()}
         title={recording ? "Stop Recording" : "Start Recording"}
       />
       <Button
         onPress={async () => {
-          if (recordingId.current != null) {
+          if (selectedRecording != null) {
             await recordingService.deleteRecordingAsync(selectedRecording);
             const recordings = await recordingService.getRecordingsAsync();
             setRecordings(recordings);
+            setMotionData([]);
           }
         }}
         title="Delete Selected Recording"
@@ -267,7 +335,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   map: {
-    width: "100%",
+    width: "80%",
     height: 300,
   },
 });
