@@ -35,9 +35,6 @@ export class RecordingService {
     }
 
     public async deleteRecordingAsync(id: number){
-        console.log(id)
-        console.log(await this.getRecordingsAsync())
         await this.db.runAsync(`DELETE FROM recording WHERE id = ?;`, [id]);
-        console.log(await this.getRecordingsAsync())
     }
 }

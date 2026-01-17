@@ -1,13 +1,14 @@
 import { Picker } from '@react-native-picker/picker';
 import { DeviceMotion } from 'expo-sensors';
 import { useEffect, useRef, useState } from 'react';
-import { Button, ScrollView, StyleSheet, Text } from 'react-native';
+import { Button, ScrollView, StyleSheet, View } from 'react-native';
 import { LineChart } from "react-native-gifted-charts";
+import MapView from 'react-native-maps';
+import { MatrixService, Vector3D } from '../matrix/matrix';
 import { MotionDto, MotionService } from '../persistence/services/motionService';
 import { RecordingDto, RecordingService } from '../persistence/services/recordingService';
 
 export default function SensorScreen() {
-  const [worldRotationDeg, setWorldRotationDeg] = useState<{ alpha: number; beta: number; gamma: number }>({ alpha: 0, beta: 0, gamma: 0 });
   const [motionData, setMotionData] = useState<Array<MotionDto>>([]);
   const motionDataRef = useRef<Array<MotionDto>>([]);
 
@@ -24,26 +25,25 @@ export default function SensorScreen() {
 
   const motionService = new MotionService();
   const recordingService = new RecordingService();
-  
+  const matrixService = new MatrixService(); 
 
   const [selectedRecording, setSelectedRecording] = useState<number>(-1);
   const [recordings, setRecordings] = useState<Array<RecordingDto>>([]);
 
   const accelerationData = useRef({ x: 0, y: 0, z: 0, timestamp: 0 });
   const rotationData = useRef({ alpha: 0, beta: 0, gamma: 0, timestamp: 0 });
-
-  const worldAcceleration = useRef({ x: 0, y: 0, z: 0});
   
   const recordingId = useRef<number | null>(null);
   const startTime = useRef<number | null>(null);
 
   useEffect(() => {
-    DeviceMotion.setUpdateInterval(33);
+    DeviceMotion.setUpdateInterval(250);
     DeviceMotion.addListener(async (deviceMotion) => {
       // acceleration in m/s²
       accelerationData.current = deviceMotion.acceleration ?? { x: 0, y: 0, z: 0, timestamp: 0 };
       rotationData.current = deviceMotion.rotation;
       await calculateWorldAccelerationAsync();
+      setRecordings(await recordingService.getRecordingsAsync());
     });
   console.log("SETUP DONE");
   }, []);
@@ -68,37 +68,50 @@ export default function SensorScreen() {
 
   async function calculateWorldAccelerationAsync() {
     // Für jede Richtung muss abgewegt werden, wie viel davon einfach in x,y,z richtung ist in der Welt.
-    let alphaDeg = rotationData.current.alpha * (180 / Math.PI);
-    let betaDeg = rotationData.current.beta * (180 / Math.PI);
-    let gammaDeg = rotationData.current.gamma * (180 / Math.PI);
+    const cosAlpha = Math.cos(rotationData.current.alpha);
+    const sinAlpha = Math.sin(rotationData.current.alpha);
+    
+    const cosBeta = Math.cos(rotationData.current.beta);
+    const sinBeta = Math.sin(rotationData.current.beta);
 
-    const cosAlpha = Math.cos(alphaDeg);
-    const cosBeta = Math.cos(betaDeg);
-    const cosGamma = Math.cos(gammaDeg);
+    const cosGamma = Math.cos(rotationData.current.gamma );
+    const sinGamma = Math.sin(rotationData.current.gamma );
 
-    setWorldRotationDeg({ alpha: alphaDeg, beta: betaDeg, gamma: gammaDeg });
+    const vector = { x: accelerationData.current.x, y: accelerationData.current.y, z: accelerationData.current.z } as Vector3D;
+    const rotationMatrixX = {
+        m11: 1, m12: 0, m13: 0,
+        m21: 0, m22: cosBeta, m23: -sinBeta,
+        m31: 0, m32: sinBeta, m33: cosBeta 
+      }
+    const rotationMatrixY = {
+        m11: cosGamma, m12: 0, m13: sinGamma,
+        m21: 0, m22: 1, m23: 0,
+        m31: -sinGamma, m32: 0, m33: cosGamma 
+      }
+    const rotationMatrixZ = {
+        m11: cosAlpha, m12: -sinAlpha, m13: 0,
+        m21: sinAlpha, m22: cosAlpha, m23: 0,
+        m31: 0, m32: 0, m33: 1 
+      }
 
-    worldAcceleration.current.x = ((accelerationData.current.x * cosGamma) * cosBeta) * cosAlpha
-    worldAcceleration.current.y = ((accelerationData.current.y * cosGamma) * cosAlpha) * cosBeta
-    worldAcceleration.current.z = ((accelerationData.current.z * cosBeta) * cosAlpha) * cosGamma
+    const vectorWithX = matrixService.multiplyVectorWithMatrix(vector, rotationMatrixX);
+    const vectorWithXY = matrixService.multiplyVectorWithMatrix(vectorWithX, rotationMatrixY);
+    const worldVector = matrixService.multiplyVectorWithMatrix(vectorWithXY, rotationMatrixZ);
 
     const timeSinceLastUpdate = Date.now() - (accelerationData.current.timestamp);
     if(recordingRef.current){
-      
-      await motionService.createMotionAsync({ recordingFK: recordingId.current!, x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate});
+      await motionService.createMotionAsync({ recordingFK: recordingId.current!, x: worldVector.x, y: worldVector.y, z: worldVector.z, duration: timeSinceLastUpdate});
       if(motionDataRef.current.length > 10){
-        console.log("TRIMMING MOTION DATA");
         setMotionData(motionDataRef.current.slice(1))
       }else{
-        setMotionData(motionDataRef.current.concat([{ x: worldAcceleration.current.x, y: worldAcceleration.current.y, z: worldAcceleration.current.z, duration: timeSinceLastUpdate }]));
+        setMotionData(motionDataRef.current.concat([{ x: worldVector.x, y: worldVector.y, z: worldVector.z, duration: timeSinceLastUpdate }]));
       }
-      console.log(motionDataRef.current);
     }
   }
 
   return (
-      <ScrollView contentContainerStyle={styles.container}>
-          <Picker style={styles.picker}
+    <View style={styles.container}>
+            <Picker style={styles.picker}
             selectedValue={selectedRecording}
             onValueChange={async (itemValue, itemIndex) => {
               const data = await motionService.getMotionsFromRecordingIdAsync(itemValue);
@@ -117,12 +130,14 @@ export default function SensorScreen() {
                     />
                   ))
               }
-          </Picker>
+      </Picker>
+      <MapView style={styles.map} />
+      <ScrollView contentContainerStyle={styles.container}>
           {
             motionData && <LineChart data={motionData.map((data) => ({value: data.x}))} 
-            //data2={motionData.map((data) => ({value: data.y}))} 
-            //data3={motionData.map((data) => ({value: data.z}))} 
-            stepValue={0.1}
+            data2={motionData.map((data) => ({value: data.y}))} 
+            data3={motionData.map((data) => ({value: data.z}))} 
+            stepValue={0.2}
             height={250}
             showVerticalLines
             spacing={44}
@@ -139,18 +154,14 @@ export default function SensorScreen() {
             textFontSize={13}
             />
           }
-          <Button onPress={() => motionService.getMotionsFromRecordingIdAsync(recordingId.current ?? 0)} title="Get Last Recording"/>
+      </ScrollView>
           <Button onPress={() => toggleRecording()} title={recording ? "Stop Recording" : "Start Recording"}/>
           <Button onPress={async () => {if(recordingId.current != null){
             await recordingService.deleteRecordingAsync(selectedRecording)
             const recordings = await recordingService.getRecordingsAsync();
             setRecordings(recordings);
             }}} title="Delete Selected Recording"/>
-          <Text>Rotation:</Text>
-          <Text>x: {worldRotationDeg.alpha.toFixed(2)}</Text>
-          <Text>y: {worldRotationDeg.beta.toFixed(2)}</Text>
-          <Text>z: {worldRotationDeg.gamma.toFixed(2)}</Text>
-      </ScrollView>    
+    </View>  
   );
 }
 
@@ -159,6 +170,7 @@ const styles = StyleSheet.create({
     width: '80%',
   },
   container: {
+    width: '100%',
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
@@ -172,5 +184,9 @@ const styles = StyleSheet.create({
   data: {
     fontSize: 20,
     marginBottom: 8,
+  },
+  map: {
+    width: '100%',
+    height: 300,
   },
 });
