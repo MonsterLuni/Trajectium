@@ -1,40 +1,45 @@
 import { Database } from "../db";
 
 export type RecordingDto = {
-    id: number;
-    startTime: number;
-    endTime: number;
+  id: number;
+  startTime: number;
+  endTime: number;
 };
 
 export type PutRecordingDto = {
-    id: number;
-    startTime: number;
-    endTime: number;
-}
+  id: number;
+  startTime: number;
+  endTime: number;
+};
 
 export type CreateRecordingDto = {
-    startTime: number;
-}
+  startTime: number;
+};
 
 export class RecordingService {
-    private readonly db: Database
-    constructor(){
-        this.db = new Database();
-    }
+  private readonly db: Database;
+  constructor() {
+    this.db = new Database();
+  }
 
-    public async getRecordingsAsync() {
-        return await this.db.getAllAsync<RecordingDto>(`SELECT * FROM recording;`);
-    }
+  public async getRecordingsAsync() {
+    return await this.db.getAllAsync<RecordingDto>(`SELECT * FROM recording;`);
+  }
 
-    public async createRecordingAsync(createRecordingDto: CreateRecordingDto){
-        return this.db.runAsync(`INSERT INTO recording (startTime) VALUES (?);`, [createRecordingDto.startTime]);
-    }
+  public async createRecordingAsync(createRecordingDto: CreateRecordingDto) {
+    return this.db.runAsync(`INSERT INTO recording (startTime) VALUES (?);`, [
+      createRecordingDto.startTime,
+    ]);
+  }
 
-    public async updateRecordingAsync(PutRecordingDto: PutRecordingDto){
-        return await this.db.runAsync(`UPDATE recording SET startTime = ?, endTime = ? WHERE id = ?;`, [PutRecordingDto.startTime, PutRecordingDto.endTime, PutRecordingDto.id]);
-    }
+  public async updateRecordingAsync(PutRecordingDto: PutRecordingDto) {
+    return await this.db.runAsync(
+      `UPDATE recording SET startTime = ?, endTime = ? WHERE id = ?;`,
+      [PutRecordingDto.startTime, PutRecordingDto.endTime, PutRecordingDto.id],
+    );
+  }
 
-    public async deleteRecordingAsync(id: number){
-        await this.db.runAsync(`DELETE FROM recording WHERE id = ?;`, [id]);
-    }
+  public async deleteRecordingAsync(id: number) {
+    await this.db.runAsync(`DELETE FROM recording WHERE id = ?;`, [id]);
+  }
 }
