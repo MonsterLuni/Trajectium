@@ -2,11 +2,11 @@ import { Picker } from "@react-native-picker/picker";
 import * as Location from "expo-location";
 import { DeviceMotion } from "expo-sensors";
 import { useEffect, useRef, useState } from "react";
-import { Button, StyleSheet, useWindowDimensions, View } from "react-native";
-import MapView, { Polyline } from "react-native-maps";
+import { Button, StyleSheet, View } from "react-native";
+import MapView, { LatLng, Polyline } from "react-native-maps";
 import MatrixService, { Vector3D } from "../matrix/matrix";
 import MotionService, {
-  MotionDto,
+  MotionWithStartpointDto,
 } from "../persistence/services/motionService";
 import RecordingService, {
   RecordingDto,
@@ -19,10 +19,10 @@ export default function SensorScreen() {
   ).current;
   const matrixService = useRef<MatrixService>(new MatrixService()).current;
 
-  const [motionData, setMotionData] = useState<Array<MotionDto>>([]);
-  const motionDataRef = useRef<Array<MotionDto>>([]);
-  const [mapStartPosition, setMapStartPosition] =
-    useState<Location.LocationObjectCoords>();
+  const [motionData, setMotionData] = useState<Array<MotionWithStartpointDto>>(
+    [],
+  );
+  const motionDataRef = useRef<Array<MotionWithStartpointDto>>([]);
 
   useEffect(() => {
     motionDataRef.current = motionData;
@@ -31,13 +31,17 @@ export default function SensorScreen() {
   const [recording, setRecording] = useState<boolean>(false);
   const recordingRef = useRef<boolean>(false);
 
-  const { width } = useWindowDimensions();
-  const maxHeight = 250;
-  const computedHeight = Math.min(maxHeight, motionData.length * 10);
-
   useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
+
+  const [currentPositionInMap, setCurrentPositionInMap] =
+    useState<LatLng | null>(null);
+  const currentPositionInMapRef = useRef<LatLng | null>(null);
+
+  useEffect(() => {
+    currentPositionInMapRef.current = currentPositionInMap;
+  }, [currentPositionInMap]);
 
   const [selectedRecording, setSelectedRecording] = useState<number>(-1);
   const [recordings, setRecordings] = useState<Array<RecordingDto>>([]);
@@ -56,7 +60,7 @@ export default function SensorScreen() {
     const init = async () => {
       setRecordings(await recordingService.getRecordingsAsync());
       const location = await Location.getCurrentPositionAsync();
-      setMapStartPosition(location.coords);
+      setCurrentPositionInMap(location.coords);
     };
     init();
   }, []);
@@ -105,6 +109,16 @@ export default function SensorScreen() {
 
   async function calculateWorldAccelerationAsync() {
     if (recordingId.current == null) {
+      console.log("RETURN");
+      return;
+    }
+
+    if (currentPositionInMap == null) {
+      console.log("RETURN");
+      return;
+    }
+
+    if (currentPositionInMapRef.current == null) {
       console.log("RETURN");
       return;
     }
@@ -179,27 +193,27 @@ export default function SensorScreen() {
       vectorWithX,
       rotationMatrixY,
     );
-    const worldVector = matrixService.multiplyVectorWithMatrix(
+    let worldVector = matrixService.multiplyVectorWithMatrix(
       vectorWithXY,
       rotationMatrixZ,
-    );
-
-    worldAcceleration.current = matrixService.addVectors(
-      worldAcceleration.current,
-      worldVector,
     );
 
     let timeSinceLastUpdate: number | null;
     if (lastTime.current != null) {
       timeSinceLastUpdate = Date.now() - lastTime.current;
 
-      worldAcceleration.current = calculateLengthOfMotionBasedOnTime(
-        worldAcceleration.current,
+      const currentVelocity = calculateLengthOfMotionBasedOnTime(
+        worldVector,
         timeSinceLastUpdate / 1000,
       );
 
+      worldVelocity.current = matrixService.addVectors(
+        worldVelocity.current,
+        currentVelocity,
+      );
+
       const motionInMeters = calculateLengthOfMotionBasedOnTime(
-        worldAcceleration.current,
+        worldVelocity.current,
         timeSinceLastUpdate / 1000,
       );
 
@@ -210,8 +224,10 @@ export default function SensorScreen() {
           y: motionInMeters.y,
           z: motionInMeters.z,
           duration: timeSinceLastUpdate,
+          latitude: currentPositionInMapRef.current.latitude,
+          longitude: currentPositionInMapRef.current.longitude,
         });
-        if (motionDataRef.current.length > 100) {
+        if (motionDataRef.current.length > 10000) {
           setMotionData(motionDataRef.current.slice(1));
         } else {
           setMotionData(
@@ -221,9 +237,20 @@ export default function SensorScreen() {
                 y: motionInMeters.y,
                 z: motionInMeters.z,
                 duration: timeSinceLastUpdate,
+                latitude: currentPositionInMapRef.current.latitude,
+                longitude: currentPositionInMapRef.current.longitude,
               },
             ]),
           );
+
+          setCurrentPositionInMap({
+            latitude:
+              currentPositionInMapRef.current.latitude -
+              motionInMeters.x / 111320,
+            longitude:
+              currentPositionInMapRef.current.longitude -
+              motionInMeters.y / 111320,
+          });
         }
       }
     }
@@ -264,35 +291,45 @@ export default function SensorScreen() {
             />
           ))}
       </Picker>
-      {mapStartPosition && (
+      {currentPositionInMap && (
         <MapView
           style={styles.map}
           initialRegion={{
-            latitude: mapStartPosition.latitude,
-            longitude: mapStartPosition.longitude,
+            latitude: currentPositionInMap.latitude,
+            longitude: currentPositionInMap.longitude,
             latitudeDelta: 0.001,
             longitudeDelta: 0.001,
           }}
         >
           {motionData &&
-            mapStartPosition &&
-            motionData.map((motion, index) => (
-              <Polyline
-                key={`${selectedRecording}-${index}`}
-                coordinates={[
-                  {
-                    latitude: mapStartPosition.latitude,
-                    longitude: mapStartPosition.longitude,
-                  },
-                  {
-                    latitude: mapStartPosition.latitude - motion.x / 111320,
-                    longitude: mapStartPosition.longitude - motion.y / 111320,
-                  },
-                ]}
-                strokeWidth={4}
-                strokeColor="#1E90FF"
-              />
-            ))}
+            currentPositionInMap != null &&
+            motionData.map((motion, index) => {
+              const polyLine = (
+                <Polyline
+                  key={`${selectedRecording}-${index}`}
+                  coordinates={[
+                    {
+                      latitude:
+                        currentPositionInMap.latitude -
+                        (index != 0 ? motionData[index - 1].x / 111320 : 0),
+                      longitude:
+                        currentPositionInMap.longitude -
+                        (index != 0 ? motionData[index - 1].y / 111320 : 0),
+                    },
+                    {
+                      latitude:
+                        currentPositionInMap.latitude - motion.x / 111320,
+                      longitude:
+                        currentPositionInMap.longitude - motion.y / 111320,
+                    },
+                  ]}
+                  strokeWidth={4}
+                  strokeColor="#1E90FF"
+                />
+              );
+
+              return polyLine;
+            })}
         </MapView>
       )}
       <Button

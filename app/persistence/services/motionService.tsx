@@ -1,10 +1,12 @@
 import Database from "../db";
 
-export type MotionDto = {
+export type MotionWithStartpointDto = {
   x: number;
   y: number;
   z: number;
   duration: number;
+  latitude: number;
+  longitude: number;
 };
 
 export type MotionRow = {
@@ -14,6 +16,8 @@ export type MotionRow = {
   y: number;
   z: number;
   duration: number;
+  latitude: number;
+  longitude: number;
 };
 
 export type CreateMotionDto = {
@@ -22,6 +26,8 @@ export type CreateMotionDto = {
   y: number;
   z: number;
   duration: number;
+  latitude: number;
+  longitude: number;
 };
 
 export default class MotionService {
@@ -32,20 +38,22 @@ export default class MotionService {
 
   public async createMotionAsync(createMotionDto: CreateMotionDto) {
     return await this.db.runAsync(
-      `INSERT INTO motion (recordingFK, x, y, z, duration) VALUES (?, ?, ?, ?, ?);`,
+      `INSERT INTO motion (recordingFK, x, y, z, duration, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?);`,
       [
         createMotionDto.recordingFK,
         createMotionDto.x,
         createMotionDto.y,
         createMotionDto.z,
         createMotionDto.duration,
+        createMotionDto.latitude,
+        createMotionDto.longitude,
       ],
     );
   }
 
   public async getMotionsFromRecordingIdAsync(id: number) {
     return await this.db.getAllAsync<MotionRow>(
-      `SELECT id, recordingFK, x, y, z, duration FROM motion WHERE recordingFK = ? ORDER BY id ASC;`,
+      `SELECT id, recordingFK, x, y, z, latitude, longitude duration FROM motion WHERE recordingFK = ? ORDER BY id ASC;`,
       [id],
     );
   }
