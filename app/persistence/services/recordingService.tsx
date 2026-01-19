@@ -4,6 +4,8 @@ export type RecordingDto = {
   id: number;
   startTime: number;
   endTime: number;
+  latitude: number;
+  longitude: number;
 };
 
 export type PutRecordingDto = {
@@ -14,6 +16,8 @@ export type PutRecordingDto = {
 
 export type CreateRecordingDto = {
   startTime: number;
+  latitude: number;
+  longitude: number;
 };
 
 export default class RecordingService {
@@ -26,10 +30,22 @@ export default class RecordingService {
     return await this.db.getAllAsync<RecordingDto>(`SELECT * FROM recording;`);
   }
 
+  public async getRecordingAsync(id: number) {
+    return await this.db.getAsync<RecordingDto>(
+      `SELECT * FROM recording WHERE id = ?;`,
+      [id],
+    );
+  }
+
   public async createRecordingAsync(createRecordingDto: CreateRecordingDto) {
-    return this.db.runAsync(`INSERT INTO recording (startTime) VALUES (?);`, [
-      createRecordingDto.startTime,
-    ]);
+    return this.db.runAsync(
+      `INSERT INTO recording (startTime, latitude, longitude) VALUES (?, ?, ?);`,
+      [
+        createRecordingDto.startTime,
+        createRecordingDto.latitude,
+        createRecordingDto.longitude,
+      ],
+    );
   }
 
   public async updateRecordingAsync(PutRecordingDto: PutRecordingDto) {

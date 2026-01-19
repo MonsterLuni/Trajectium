@@ -4,205 +4,212 @@ import { DeviceMotion } from "expo-sensors";
 import { useEffect, useRef, useState } from "react";
 import { Button, StyleSheet, View } from "react-native";
 import MapView, { LatLng, Polyline } from "react-native-maps";
-import MatrixService, { Vector3D } from "../matrix/matrix";
+import MatrixService, { Vector3D } from "../helpers/matrix/matrix";
+import Utility from "../helpers/utility";
 import MotionService, {
-  MotionWithStartpointDto,
+  MotionDto,
+  MotionStartAndEndPointDto,
 } from "../persistence/services/motionService";
 import RecordingService, {
   RecordingDto,
 } from "../persistence/services/recordingService";
 
 export default function SensorScreen() {
+  const matrixService = useRef<MatrixService>(new MatrixService()).current;
   const motionService = useRef<MotionService>(new MotionService()).current;
   const recordingService = useRef<RecordingService>(
     new RecordingService(),
   ).current;
-  const matrixService = useRef<MatrixService>(new MatrixService()).current;
 
-  const [motionData, setMotionData] = useState<Array<MotionWithStartpointDto>>(
-    [],
-  );
-  const motionDataRef = useRef<Array<MotionWithStartpointDto>>([]);
+  const [currentPositionInMap, setCurrentPositionInMap] = useState<
+    LatLng | undefined
+  >();
+  const currentPositionInMapRef = useRef<LatLng | undefined>(undefined);
 
-  useEffect(() => {
-    motionDataRef.current = motionData;
-  }, [motionData]);
-
-  const [recording, setRecording] = useState<boolean>(false);
-  const recordingRef = useRef<boolean>(false);
-
-  useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
-
-  const [currentPositionInMap, setCurrentPositionInMap] =
-    useState<LatLng | null>(null);
-  const currentPositionInMapRef = useRef<LatLng | null>(null);
+  const mapRef = useRef<MapView>(null);
 
   useEffect(() => {
     currentPositionInMapRef.current = currentPositionInMap;
   }, [currentPositionInMap]);
 
-  const [selectedRecording, setSelectedRecording] = useState<number>(-1);
   const [recordings, setRecordings] = useState<Array<RecordingDto>>([]);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
 
-  const accelerationData = useRef({ x: 0, y: 0, z: 0, timestamp: 0 });
-  const rotationData = useRef({ alpha: 0, beta: 0, gamma: 0, timestamp: 0 });
-
-  const recordingId = useRef<number | null>(null);
-  const startTime = useRef<number | null>(null);
-  const lastTime = useRef<number | null>(null);
+  const recordingId = useRef<number | undefined>(undefined);
+  const startTime = useRef<number | undefined>(undefined);
+  const lastTime = useRef<number | undefined>(undefined);
 
   let worldVelocity = useRef<Vector3D>({ x: 0, y: 0, z: 0 });
   let worldAcceleration = useRef<Vector3D>({ x: 0, y: 0, z: 0 });
 
+  // new
+
+  let [recordingInstanceId, setRecordingInstanceId] = useState<
+    number | undefined
+  >();
+  let [recordingInstance, setRecordingInstance] = useState<
+    RecordingDto | undefined
+  >();
+  let [motionInstances, setMotionInstances] = useState<
+    MotionDto[] | undefined
+  >();
+
+  let motionInstancesRef = useRef<MotionDto[] | undefined>(undefined);
+
+  useEffect(() => {
+    if (!recordingInstance || !mapRef.current) return;
+
+    mapRef.current.animateToRegion(
+      {
+        latitude: recordingInstance.latitude,
+        longitude: recordingInstance.longitude,
+        latitudeDelta: 0.001,
+        longitudeDelta: 0.001,
+      },
+      1000,
+    );
+  }, [recordingInstance?.id]);
+
+  useEffect(() => {
+    motionInstancesRef.current = motionInstances;
+  }, [motionInstances]);
+
   useEffect(() => {
     const init = async () => {
-      setRecordings(await recordingService.getRecordingsAsync());
+      const recordings = await recordingService.getRecordingsAsync();
+      setRecordings(recordings);
       const location = await Location.getCurrentPositionAsync();
       setCurrentPositionInMap(location.coords);
     };
     init();
+    /*const permissions = async () => {
+      const locationPermission =
+        await Location.requestForegroundPermissionsAsync();
+      const motionPermission = await DeviceMotion.requestPermissionsAsync();
+
+      if (!locationPermission.granted && !motionPermission.granted) {
+        throw "Permissions not Set";
+      }
+      permissions();
+    };*/
   }, []);
 
   async function toggleRecording() {
-    recording ? stopRecording() : startRecording();
-    setRecording(!recording);
+    isRecording ? stopRecording() : startRecording();
+    setIsRecording(!isRecording);
   }
 
   async function startRecording() {
     worldVelocity.current = { x: 0, y: 0, z: 0 };
     worldAcceleration.current = { x: 0, y: 0, z: 0 };
-    lastTime.current = Date.now();
-    DeviceMotion.setUpdateInterval(33);
-    DeviceMotion.addListener(async (deviceMotion) => {
-      // acceleration in m/s²
-      accelerationData.current = deviceMotion.acceleration ?? {
-        x: 0,
-        y: 0,
-        z: 0,
-        timestamp: 0,
-      };
-      rotationData.current = deviceMotion.rotation;
-      await calculateWorldAccelerationAsync();
-    });
-    lastTime.current = Date.now();
     const startPoint = await Location.getCurrentPositionAsync();
+    setCurrentPositionInMap(startPoint.coords);
+
     startTime.current = Date.now();
+    lastTime.current = undefined;
     const result = await recordingService.createRecordingAsync({
       startTime: startTime.current,
+      latitude: startPoint.coords.latitude,
+      longitude: startPoint.coords.longitude,
     });
     recordingId.current = result.lastInsertRowId;
-    setMotionData([]);
+    setRecordingInstance(undefined);
+    setMotionInstances([]);
+
+    DeviceMotion.addListener(async (deviceMotion) => {
+      // acceleration in m/s²
+      if (deviceMotion.acceleration != null) {
+        await calculateWorldAccelerationAsync(
+          deviceMotion.rotation,
+          deviceMotion.acceleration,
+        );
+      } else {
+        throw "Acceleration is null";
+      }
+    });
   }
 
   async function stopRecording() {
+    Utility.ensureValue("recordingId", recordingId?.current);
+    Utility.ensureValue("startTime", startTime?.current);
+
     DeviceMotion.removeAllListeners();
+
     await recordingService.updateRecordingAsync({
-      id: recordingId.current!,
-      startTime: startTime.current!,
+      id: recordingId.current,
+      startTime: startTime.current,
       endTime: Date.now(),
     });
+
+    const recording = await recordingService.getRecordingAsync(
+      recordingId.current,
+    );
+    if (recording == null) {
+      throw "recording is null";
+    }
+    setRecordingInstance(recording);
+
     const recordings = await recordingService.getRecordingsAsync();
     setRecordings(recordings);
   }
 
-  async function calculateWorldAccelerationAsync() {
-    if (recordingId.current == null) {
-      console.log("RETURN");
-      return;
-    }
-
-    if (currentPositionInMap == null) {
-      console.log("RETURN");
-      return;
-    }
-
-    if (currentPositionInMapRef.current == null) {
-      console.log("RETURN");
-      return;
-    }
-
-    // Für jede Richtung muss abgewegt werden, wie viel davon einfach in x,y,z richtung ist in der Welt.
-    const cosAlpha = Math.cos(rotationData.current.alpha);
-    const sinAlpha = Math.sin(rotationData.current.alpha);
-
-    const cosBeta = Math.cos(rotationData.current.beta);
-    const sinBeta = Math.sin(rotationData.current.beta);
-
-    const cosGamma = Math.cos(rotationData.current.gamma);
-    const sinGamma = Math.sin(rotationData.current.gamma);
+  async function calculateWorldAccelerationAsync(
+    rotationData: {
+      alpha: number;
+      beta: number;
+      gamma: number;
+      timestamp: number;
+    },
+    accelerationData: {
+      x: number;
+      y: number;
+      z: number;
+      timestamp: number;
+    },
+  ) {
+    Utility.ensureValue("recordingId", recordingId?.current);
+    Utility.ensureValue(
+      "currentPositionInMapRef",
+      currentPositionInMapRef?.current,
+    );
+    Utility.ensureValue("motionInstancesRef", motionInstancesRef?.current);
 
     const vector = {
-      x: accelerationData.current.x,
-      y: accelerationData.current.y,
-      z: accelerationData.current.z,
+      x: accelerationData.x,
+      y: accelerationData.y,
+      z: accelerationData.z,
     } as Vector3D;
 
-    if (vector.x < 0.08 && vector.x > -0.08) {
-      vector.x = 0;
-    }
-
-    if (vector.y < 0.08 && vector.y > -0.08) {
-      vector.y = 0;
-    }
-
-    if (vector.z < 0.08 && vector.z > -0.08) {
-      vector.z = 0;
-    }
-
-    const rotationMatrixX = {
-      m11: 1,
-      m12: 0,
-      m13: 0,
-      m21: 0,
-      m22: cosBeta,
-      m23: -sinBeta,
-      m31: 0,
-      m32: sinBeta,
-      m33: cosBeta,
-    };
-    const rotationMatrixY = {
-      m11: cosGamma,
-      m12: 0,
-      m13: sinGamma,
-      m21: 0,
-      m22: 1,
-      m23: 0,
-      m31: -sinGamma,
-      m32: 0,
-      m33: cosGamma,
-    };
-    const rotationMatrixZ = {
-      m11: cosAlpha,
-      m12: -sinAlpha,
-      m13: 0,
-      m21: sinAlpha,
-      m22: cosAlpha,
-      m23: 0,
-      m31: 0,
-      m32: 0,
-      m33: 1,
-    };
-
-    const vectorWithX = matrixService.multiplyVectorWithMatrix(
+    const vectorWithZ = matrixService.multiplyVectorWithMatrix(
       vector,
-      rotationMatrixX,
+      matrixService.rotationMatrixZ(rotationData.alpha),
     );
-    const vectorWithXY = matrixService.multiplyVectorWithMatrix(
-      vectorWithX,
-      rotationMatrixY,
+    const vectorWithZX = matrixService.multiplyVectorWithMatrix(
+      vectorWithZ,
+      matrixService.rotationMatrixX(rotationData.beta),
     );
     let worldVector = matrixService.multiplyVectorWithMatrix(
-      vectorWithXY,
-      rotationMatrixZ,
+      vectorWithZX,
+      matrixService.rotationMatrixY(rotationData.gamma),
     );
 
+    if (worldVector.x < 0.1 && worldVector.x > -0.1) {
+      worldVector.x = 0;
+    }
+
+    if (worldVector.y < 0.1 && worldVector.y > -0.1) {
+      worldVector.y = 0;
+    }
+
+    if (worldVector.z < 0.1 && worldVector.z > -0.1) {
+      worldVector.z = 0;
+    }
+
     let timeSinceLastUpdate: number | null;
-    if (lastTime.current != null) {
+    if (lastTime.current) {
       timeSinceLastUpdate = Date.now() - lastTime.current;
 
-      const currentVelocity = calculateLengthOfMotionBasedOnTime(
+      const currentVelocity = matrixService.multiplyVectorWithNumber(
         worldVector,
         timeSinceLastUpdate / 1000,
       );
@@ -212,117 +219,117 @@ export default function SensorScreen() {
         currentVelocity,
       );
 
-      const motionInMeters = calculateLengthOfMotionBasedOnTime(
+      const motionInMeters = matrixService.multiplyVectorWithNumber(
         worldVelocity.current,
         timeSinceLastUpdate / 1000,
       );
 
-      if (recordingRef.current) {
+      if (recordingId.current) {
         await motionService.createMotionAsync({
           recordingFK: recordingId.current,
           x: motionInMeters.x,
           y: motionInMeters.y,
           z: motionInMeters.z,
-          duration: timeSinceLastUpdate,
-          latitude: currentPositionInMapRef.current.latitude,
-          longitude: currentPositionInMapRef.current.longitude,
         });
-        if (motionDataRef.current.length > 10000) {
-          setMotionData(motionDataRef.current.slice(1));
+        if (motionInstancesRef.current.length > 10000) {
+          setMotionInstances(motionInstancesRef.current.slice(1));
         } else {
-          setMotionData(
-            motionDataRef.current.concat([
+          setMotionInstances(
+            motionInstancesRef.current.concat([
               {
                 x: motionInMeters.x,
                 y: motionInMeters.y,
                 z: motionInMeters.z,
-                duration: timeSinceLastUpdate,
-                latitude: currentPositionInMapRef.current.latitude,
-                longitude: currentPositionInMapRef.current.longitude,
               },
             ]),
           );
-
-          setCurrentPositionInMap({
-            latitude:
-              currentPositionInMapRef.current.latitude -
-              motionInMeters.x / 111320,
-            longitude:
-              currentPositionInMapRef.current.longitude -
-              motionInMeters.y / 111320,
-          });
         }
       }
     }
     lastTime.current = Date.now();
+    console.log(worldVelocity);
   }
 
-  function calculateLengthOfMotionBasedOnTime(
-    velocityVector: Vector3D,
-    durationInSeconds: number,
+  function calculatePositionOfEachMotionForMap(
+    recording: RecordingDto,
+    motions: MotionDto[],
   ) {
-    return {
-      x: velocityVector.x * durationInSeconds,
-      y: velocityVector.y * durationInSeconds,
-      z: velocityVector.z * durationInSeconds,
-    } as Vector3D;
+    //TODO: Calculate 111320 with latitude
+    let startPosition = {
+      latitude: recording.latitude,
+      longitude: recording.longitude,
+    } as LatLng;
+    let motionsWithPosition: MotionStartAndEndPointDto[] = [];
+
+    motions.forEach((motion) => {
+      let nextPosition = {
+        latitude: startPosition.latitude - motion.x / 111320,
+        longitude: startPosition.longitude - motion.y / 111320,
+      } as LatLng;
+
+      motionsWithPosition = motionsWithPosition.concat({
+        startPoint: startPosition,
+        endPoint: nextPosition,
+      });
+      startPosition = nextPosition;
+    });
+
+    return motionsWithPosition;
   }
 
   return (
     <View style={styles.container}>
-      <Picker
-        style={styles.picker}
-        selectedValue={selectedRecording}
-        onValueChange={async (itemValue) => {
-          setSelectedRecording(itemValue);
-          setMotionData(
-            await motionService.getMotionsFromRecordingIdAsync(itemValue),
-          );
-        }}
-      >
-        <Picker.Item color="#000" label="Select Recording" value={-1} />
-        {recordings &&
-          recordings.map((recording) => (
-            <Picker.Item
-              color="#000"
-              key={recording.id}
-              label={`Recording ${recording.id}`}
-              value={recording.id}
-            />
-          ))}
-      </Picker>
-      {currentPositionInMap && (
-        <MapView
-          style={styles.map}
-          initialRegion={{
-            latitude: currentPositionInMap.latitude,
-            longitude: currentPositionInMap.longitude,
-            latitudeDelta: 0.001,
-            longitudeDelta: 0.001,
+      {
+        <Picker
+          style={styles.picker}
+          selectedValue={recordingInstanceId}
+          onValueChange={async (itemValue: number | undefined) => {
+            setRecordingInstanceId(itemValue);
+            if (itemValue) {
+              const recording =
+                await recordingService.getRecordingAsync(itemValue);
+              if (recording != null) {
+                setRecordingInstance(recording);
+              }
+
+              if (itemValue) {
+                const motions =
+                  await motionService.getMotionsFromRecordingIdAsync(itemValue);
+                if (motions != null) {
+                  setMotionInstances(motions);
+                }
+              }
+            }
           }}
         >
-          {motionData &&
-            currentPositionInMap != null &&
-            motionData.map((motion, index) => {
+          <Picker.Item
+            color="#000"
+            label="Select Recording"
+            value={undefined}
+          />
+          {recordings &&
+            recordings.map((recording) => (
+              <Picker.Item
+                color="#000"
+                key={recording.id}
+                label={`Recording ${recording.id}`}
+                value={recording.id}
+              />
+            ))}
+        </Picker>
+      }
+      {
+        <MapView style={styles.map} ref={mapRef}>
+          {recordingInstance &&
+            motionInstances &&
+            calculatePositionOfEachMotionForMap(
+              recordingInstance,
+              motionInstances,
+            ).map((positions, index) => {
               const polyLine = (
                 <Polyline
-                  key={`${selectedRecording}-${index}`}
-                  coordinates={[
-                    {
-                      latitude:
-                        currentPositionInMap.latitude -
-                        (index != 0 ? motionData[index - 1].x / 111320 : 0),
-                      longitude:
-                        currentPositionInMap.longitude -
-                        (index != 0 ? motionData[index - 1].y / 111320 : 0),
-                    },
-                    {
-                      latitude:
-                        currentPositionInMap.latitude - motion.x / 111320,
-                      longitude:
-                        currentPositionInMap.longitude - motion.y / 111320,
-                    },
-                  ]}
+                  key={`${recordingInstance.id}-${index}`}
+                  coordinates={[positions.startPoint, positions.endPoint]}
                   strokeWidth={4}
                   strokeColor="#1E90FF"
                 />
@@ -331,18 +338,20 @@ export default function SensorScreen() {
               return polyLine;
             })}
         </MapView>
-      )}
+      }
       <Button
         onPress={() => toggleRecording()}
-        title={recording ? "Stop Recording" : "Start Recording"}
+        title={isRecording ? "Stop Recording" : "Start Recording"}
       />
       <Button
         onPress={async () => {
-          if (selectedRecording != null) {
-            await recordingService.deleteRecordingAsync(selectedRecording);
+          if (recordingInstance != null) {
+            await recordingService.deleteRecordingAsync(recordingInstance.id);
             const recordings = await recordingService.getRecordingsAsync();
             setRecordings(recordings);
-            setMotionData([]);
+
+            setRecordingInstance(undefined);
+            setMotionInstances([]);
           }
         }}
         title="Delete Selected Recording"

@@ -12,8 +12,8 @@ export default class Database {
   private initializeDatabase() {
     this.db.execSync(`
           PRAGMA foreign_keys = ON;
-          CREATE TABLE IF NOT EXISTS recording (id INTEGER PRIMARY KEY AUTOINCREMENT, startTime INTEGER NOT NULL, endTime INTEGER);
-          CREATE TABLE IF NOT EXISTS motion (id INTEGER PRIMARY KEY AUTOINCREMENT, recordingFK INTEGER NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, duration INTEGER NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, FOREIGN KEY(recordingFK) REFERENCES recording(id) ON DELETE CASCADE);
+          CREATE TABLE IF NOT EXISTS recording (id INTEGER PRIMARY KEY AUTOINCREMENT, startTime INTEGER NOT NULL, endTime INTEGER, latitude REAL NOT NULL, longitude REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS motion (id INTEGER PRIMARY KEY AUTOINCREMENT, recordingFK INTEGER NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, FOREIGN KEY(recordingFK) REFERENCES recording(id) ON DELETE CASCADE);
         `);
   }
 
@@ -34,5 +34,12 @@ export default class Database {
     params: SQLite.SQLiteBindParams = [],
   ) {
     return await this.db.getAllAsync<returnType>(command, params);
+  }
+
+  public async getAsync<returnType>(
+    command: string,
+    params: SQLite.SQLiteBindParams = [],
+  ) {
+    return await this.db.getFirstAsync<returnType>(command, params);
   }
 }
